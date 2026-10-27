@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""从 data.xlsx 生成 index.html（属性排名，不含爵位/阵容/集结进分）"""
+"""从 data.xlsx 生成 index.html — 醉梦六维属性排名（不含实力/集结进分）"""
 from __future__ import annotations
 
-import json
 from collections import Counter
 from pathlib import Path
 
@@ -15,7 +14,8 @@ ROOT = Path(__file__).resolve().parent
 DATA_XLSX = ROOT / "data.xlsx"
 OUT_HTML = ROOT / "index.html"
 
-W_INF, W_ARC = 0.55, 0.45
+# 六维等权归一后综合（也可直接用表内六维综合做排名展示）
+# 属性分 = 六维综合 / 本组最大六维 * 100（仅统计六项齐全者）
 
 
 def to_num(v):
@@ -38,15 +38,6 @@ def to_str(v):
     return str(v).strip().replace("\n", "").replace("\r", "").replace('"', "")
 
 
-def to_bool_gong(v):
-    s = to_str(v)
-    if s in ("是", "Y", "y", "true", "True", "1"):
-        return True
-    if s in ("否", "N", "n", "false", "False", "0"):
-        return False
-    return None
-
-
 def esc(s):
     return (
         str(s)
@@ -63,9 +54,14 @@ def fmt(n, d=2):
     if isinstance(n, float) and n == int(n):
         return str(int(n))
     if isinstance(n, (int, float)):
-        s = f"{n:.{d}f}".rstrip("0").rstrip(".")
-        return s
+        return f"{n:.{d}f}".rstrip("0").rstrip(".")
     return str(n)
+
+
+def fmt_power(n):
+    if n is None:
+        return "-"
+    return f"{int(n):,}"
 
 
 def load_members(path: Path):
@@ -78,104 +74,91 @@ def load_members(path: Path):
         name = to_str(row[1] if len(row) > 1 else None)
         if not name:
             continue
-        members.append(
-            {
-                "seq": to_num(row[0]),
-                "name": name,
-                "title": to_num(row[2]) if len(row) > 2 else None,
-                "faction": to_str(row[3]) if len(row) > 3 else "",
-                "gong4": to_bool_gong(row[4]) if len(row) > 4 else None,
-                "rally": to_num(row[5]) if len(row) > 5 else None,
-                "inf_hp": to_num(row[6]) if len(row) > 6 else None,
-                "inf_def": to_num(row[7]) if len(row) > 7 else None,
-                "arc_atk": to_num(row[8]) if len(row) > 8 else None,
-                "arc_dmg": to_num(row[9]) if len(row) > 9 else None,
-            }
-        )
+        m = {
+            "seq": to_num(row[0]),
+            "name": name,
+            "power": to_num(row[2]) if len(row) > 2 else None,
+            "rally": to_num(row[3]) if len(row) > 3 else None,
+            "inf_hp": to_num(row[4]) if len(row) > 4 else None,
+            "inf_def": to_num(row[5]) if len(row) > 5 else None,
+            "arc_dmg": to_num(row[6]) if len(row) > 6 else None,
+            "arc_atk": to_num(row[7]) if len(row) > 7 else None,
+            "cav_atk": to_num(row[8]) if len(row) > 8 else None,
+            "cav_dmg": to_num(row[9]) if len(row) > 9 else None,
+            "six": to_num(row[10]) if len(row) > 10 else None,
+        }
+        # recompute six if attrs present
+        attrs = [m["inf_hp"], m["inf_def"], m["arc_dmg"], m["arc_atk"], m["cav_atk"], m["cav_dmg"]]
+        if all(a is not None for a in attrs):
+            calc = sum(attrs)
+            if m["six"] is None or m["six"] == 0:
+                m["six"] = round(calc, 2)
+            m["inf_sum"] = m["inf_hp"] + m["inf_def"]
+            m["arc_sum"] = m["arc_atk"] + m["arc_dmg"]
+            m["cav_sum"] = m["cav_atk"] + m["cav_dmg"]
+            m["complete"] = True
+        else:
+            m["complete"] = False
+            m["inf_sum"] = m["arc_sum"] = m["cav_sum"] = None
+        members.append(m)
     return members, ws.title
 
 
 def score_members(members):
-    complete, incomplete = [], []
-    for m in members:
-        attrs = [m["inf_hp"], m["inf_def"], m["arc_atk"], m["arc_dmg"]]
-        if all(a is not None for a in attrs):
-            m["inf_sum"] = m["inf_hp"] + m["inf_def"]
-            m["arc_sum"] = m["arc_atk"] + m["arc_dmg"]
-            complete.append(m)
-        else:
-            issues = []
-            for k, lab in (
-                ("inf_hp", "缺步兵生命"),
-                ("inf_def", "缺步兵防御"),
-                ("arc_atk", "缺弓兵攻击"),
-                ("arc_dmg", "缺弓兵破坏"),
-            ):
-                if m[k] is None:
-                    issues.append(lab)
-            m["issues"] = issues
-            incomplete.append(m)
+    complete = [m for m in members if m["complete"] and m["six"] and m["six"] > 0]
+    incomplete = [m for m in members if not m["complete"]]
 
     if not complete:
-        raise SystemExit("没有四项兵种齐全的成员，无法生成排名")
+        raise SystemExit("没有六维齐全的成员，无法生成排名")
 
-    max_inf = max(m["inf_sum"] for m in complete)
-    max_arc = max(m["arc_sum"] for m in complete)
+    max_six = max(m["six"] for m in complete)
     for m in complete:
-        inf_n = m["inf_sum"] / max_inf * 100
-        arc_n = m["arc_sum"] / max_arc * 100
-        m["score"] = round(W_INF * inf_n + W_ARC * arc_n, 2)
+        m["score"] = round(m["six"] / max_six * 100, 2)
 
-    complete.sort(key=lambda x: (-x["score"], -x["inf_sum"], -x["arc_sum"], x["name"]))
+    complete.sort(key=lambda x: (-x["score"], -(x["power"] or 0), x["name"]))
     for i, m in enumerate(complete, 1):
         m["rank"] = i
 
-    blank, partial = [], []
-    for m in incomplete:
-        has_combat = any(m[k] is not None for k in ("inf_hp", "inf_def", "arc_atk", "arc_dmg"))
-        if not has_combat and m["rally"] is None and m["title"] is None:
-            blank.append(m)
-        else:
-            partial.append(m)
+    blank = [
+        m
+        for m in incomplete
+        if all(
+            m[k] is None
+            for k in ("inf_hp", "inf_def", "arc_dmg", "arc_atk", "cav_atk", "cav_dmg", "rally")
+        )
+    ]
+    partial = [m for m in incomplete if m not in blank]
+
+    for m in partial:
+        issues = []
+        for k, lab in (
+            ("inf_hp", "缺步生"),
+            ("inf_def", "缺步防"),
+            ("arc_dmg", "缺弓破"),
+            ("arc_atk", "缺弓攻"),
+            ("cav_atk", "缺骑攻"),
+            ("cav_dmg", "缺骑破"),
+        ):
+            if m[k] is None:
+                issues.append(lab)
+        m["issues"] = issues
 
     meta = {
+        "title": "醉梦成员属性排名",
         "source": DATA_XLSX.name,
         "total": len(members),
         "complete": len(complete),
         "incomplete": len(incomplete),
         "avgScore": round(sum(m["score"] for m in complete) / len(complete), 2),
-        "avgInf": round(sum(m["inf_sum"] for m in complete) / len(complete), 1),
-        "avgArc": round(sum(m["arc_sum"] for m in complete) / len(complete), 1),
-        "faction": dict(Counter(m["faction"] for m in members if m["faction"])),
-        "gong": {
-            "yes": sum(1 for m in members if m["gong4"] is True),
-            "no": sum(1 for m in members if m["gong4"] is False),
-            "unk": sum(1 for m in members if m["gong4"] is None),
-        },
-        "max_inf": max_inf,
-        "max_arc": max_arc,
-        "formula": f"属性分 = {W_INF}*步兵归一 + {W_ARC}*弓兵归一（不含爵位/阵容/集结）",
-        "inf_rule": f"步兵归一 = (生命+防御)/{max_inf}*100",
-        "arc_rule": f"弓兵归一 = (攻击+破坏)/{max_arc}*100",
+        "avgSix": round(sum(m["six"] for m in complete) / len(complete), 1),
+        "max_six": max_six,
+        "formula": f"属性分 = 六维综合 / {max_six} × 100（不含实力、集结加成）",
+        "six_def": "六维 = 步生+步防+弓破+弓攻+骑攻+骑破",
     }
     return complete, blank, partial, meta
 
 
-def render_html(complete, blank, partial, meta, members):
-    faction = meta["faction"]
-    faction_total = sum(faction.values()) or 1
-    order = [("魏", "#4a7fd4"), ("蜀", "#3d9a6a"), ("吴", "#c47a2c"), ("群", "#8b6bc7")]
-    acc = 0.0
-    stops = []
-    for name, color in order:
-        v = faction.get(name, 0)
-        if not v:
-            continue
-        start_p = acc
-        acc += v / faction_total * 100
-        stops.append(f"{color} {start_p:.2f}% {acc:.2f}%")
-    pie_css = ", ".join(stops) if stops else "#ccc 0 100%"
-
+def render_html(complete, blank, partial, meta):
     max_score = complete[0]["score"]
     bars = []
     for m in complete[:10]:
@@ -188,63 +171,80 @@ def render_html(complete, blank, partial, meta, members):
 
     rank_rows = []
     for m in complete:
-        gong = "是" if m["gong4"] is True else ("否" if m["gong4"] is False else "-")
-        tone = " top" if m["rank"] <= 10 else (" warn" if m["gong4"] is False else "")
-        tag = ' <span class="tag">宫四否</span>' if m["gong4"] is False else ""
+        tone = " top" if m["rank"] <= 10 else ""
         rank_rows.append(
-            f'<tr class="{tone.strip()}"><td class="num">{m["rank"]}</td>'
-            f'<td>{esc(m["name"])}{tag}</td><td>{esc(m["faction"] or "-")}</td>'
-            f'<td class="num">{fmt(m["title"], 0)}</td><td class="num">{fmt(m["rally"])}</td>'
-            f'<td class="num">{fmt(m["inf_sum"], 1)}</td><td class="num">{fmt(m["arc_sum"], 1)}</td>'
-            f'<td class="num score">{fmt(m["score"])}</td><td>{gong}</td></tr>'
+            f'<tr class="{tone.strip()}" data-power="{m["power"] or -1}" data-rally="{m["rally"] or -1}" '
+            f'data-six="{m["six"]}" data-inf="{m["inf_sum"]}" data-arc="{m["arc_sum"]}" data-cav="{m["cav_sum"]}" data-score="{m["score"]}">'
+            f'<td class="num">{m["rank"]}</td>'
+            f'<td>{esc(m["name"])}</td>'
+            f'<td class="num">{fmt_power(m["power"])}</td>'
+            f'<td class="num">{fmt(m["rally"])}</td>'
+            f'<td class="num">{fmt(m["inf_sum"],1)}</td>'
+            f'<td class="num">{fmt(m["arc_sum"],1)}</td>'
+            f'<td class="num">{fmt(m["cav_sum"],1)}</td>'
+            f'<td class="num">{fmt(m["six"],1)}</td>'
+            f'<td class="num score">{fmt(m["score"])}</td></tr>'
         )
 
     top_inf = sorted(complete, key=lambda x: -x["inf_sum"])[:10]
     top_arc = sorted(complete, key=lambda x: -x["arc_sum"])[:10]
+    top_cav = sorted(complete, key=lambda x: -x["cav_sum"])[:10]
+    top_power = sorted([m for m in complete if m["power"]], key=lambda x: -x["power"])[:10]
+
+    def side_rows(items, key_a, key_b=None):
+        rows = []
+        for i, m in enumerate(items, 1):
+            if key_b:
+                rows.append(
+                    f"<tr><td>{i}</td><td>{esc(m['name'])}</td>"
+                    f"<td class=num>{fmt(m[key_a],1)}</td><td class=num>{fmt(m[key_b],1)}</td></tr>"
+                )
+            else:
+                rows.append(
+                    f"<tr><td>{i}</td><td>{esc(m['name'])}</td>"
+                    f"<td class=num>{fmt_power(m[key_a]) if key_a=='power' else fmt(m[key_a],1)}</td></tr>"
+                )
+        return "".join(rows)
+
     inf_rows = "".join(
-        f"<tr><td>{i}</td><td>{esc(m['name'])}</td><td>{esc(m['faction'] or '-')}</td>"
-        f"<td class=num>{fmt(m['inf_sum'],1)}</td><td class=num>{fmt(m['inf_hp'],1)}</td>"
-        f"<td class=num>{fmt(m['inf_def'],1)}</td></tr>"
+        f"<tr><td>{i}</td><td>{esc(m['name'])}</td><td class=num>{fmt(m['inf_sum'],1)}</td>"
+        f"<td class=num>{fmt(m['inf_hp'],1)}</td><td class=num>{fmt(m['inf_def'],1)}</td></tr>"
         for i, m in enumerate(top_inf, 1)
     )
     arc_rows = "".join(
-        f"<tr><td>{i}</td><td>{esc(m['name'])}</td><td>{esc(m['faction'] or '-')}</td>"
-        f"<td class=num>{fmt(m['arc_sum'],1)}</td><td class=num>{fmt(m['arc_atk'],1)}</td>"
-        f"<td class=num>{fmt(m['arc_dmg'],1)}</td></tr>"
+        f"<tr><td>{i}</td><td>{esc(m['name'])}</td><td class=num>{fmt(m['arc_sum'],1)}</td>"
+        f"<td class=num>{fmt(m['arc_atk'],1)}</td><td class=num>{fmt(m['arc_dmg'],1)}</td></tr>"
         for i, m in enumerate(top_arc, 1)
     )
+    cav_rows = "".join(
+        f"<tr><td>{i}</td><td>{esc(m['name'])}</td><td class=num>{fmt(m['cav_sum'],1)}</td>"
+        f"<td class=num>{fmt(m['cav_atk'],1)}</td><td class=num>{fmt(m['cav_dmg'],1)}</td></tr>"
+        for i, m in enumerate(top_cav, 1)
+    )
+
     partial_rows = "".join(
         f"<tr><td class=num>{fmt(m['seq'],0)}</td><td>{esc(m['name'])}</td>"
-        f"<td>{esc('；'.join(m.get('issues') or []))}</td>"
-        f"<td class=num>{fmt(m['inf_hp'],1)}</td><td class=num>{fmt(m['inf_def'],1)}</td>"
-        f"<td class=num>{fmt(m['arc_atk'],1)}</td><td class=num>{fmt(m['arc_dmg'],1)}</td>"
-        f"<td>{'是' if m['gong4'] is True else ('否' if m['gong4'] is False else '-')}</td></tr>"
+        f"<td class=num>{fmt_power(m['power'])}</td>"
+        f"<td>{esc('；'.join(m.get('issues') or []))}</td></tr>"
         for m in partial
     )
-    gong_no = [m for m in members if m["gong4"] is False]
-    gong_no_text = "、".join(esc(m["name"]) + f'（集结 {fmt(m["rally"])}）' for m in gong_no) or "-"
-    pie_legend = "".join(
-        f'<div class="legend"><span class="dot f-{esc(k)}"></span>{esc(k)} {v}'
-        f"（{v * 100 / faction_total:.0f}%）</div>"
-        for k, v in faction.items()
-    )
-    faction_opts = "".join(f'<option value="{esc(k)}">{esc(k)}</option>' for k in faction)
+
+    blank_names = "、".join(esc(m["name"]) for m in blank) or "-"
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>凌霄 S13 属性排名</title>
+<title>{esc(meta["title"])}</title>
 <style>
   :root {{
-    --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e8eaed;
-    --muted: #9aa3b2; --dim: #6b7380; --accent: #5b8def; --warn: #c9a227;
-    --row2: #151820;
+    --bg:#0f1115; --panel:#171a21; --border:#2a2f3a; --text:#e8eaed;
+    --muted:#9aa3b2; --dim:#6b7380; --accent:#5b8def; --row2:#151820;
   }}
-  * {{ box-sizing: border-box; }}
+  * {{ box-sizing:border-box; }}
   body {{ margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); line-height:1.5; }}
-  .wrap {{ max-width:1100px; margin:0 auto; padding:28px 20px 60px; }}
+  .wrap {{ max-width:1120px; margin:0 auto; padding:28px 20px 60px; }}
   h1 {{ font-size:26px; font-weight:650; margin:0 0 6px; }}
   h2 {{ font-size:18px; font-weight:600; margin:28px 0 10px; }}
   h3 {{ font-size:15px; font-weight:600; margin:18px 0 8px; color:var(--muted); }}
@@ -255,18 +255,13 @@ def render_html(complete, blank, partial, meta, members):
   .stat .l {{ font-size:12px; color:var(--muted); margin-top:4px; }}
   .callout {{ background:#152033; border:1px solid #2a4060; border-radius:8px; padding:12px 14px; font-size:13px; color:#c5d4ea; margin-bottom:22px; }}
   .callout strong {{ color:var(--text); }}
-  .grid2 {{ display:grid; grid-template-columns:1.3fr 1fr; gap:16px; }}
+  .grid2 {{ display:grid; grid-template-columns:1.4fr 1fr; gap:16px; }}
   .panel {{ background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px 16px; }}
   .bar-row {{ display:grid; grid-template-columns:120px 1fr 48px; gap:8px; align-items:center; margin:6px 0; font-size:12px; }}
   .bar-label {{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }}
   .bar-track {{ height:10px; background:#232833; border-radius:4px; overflow:hidden; }}
   .bar-fill {{ height:100%; background:var(--accent); border-radius:4px; }}
   .bar-val {{ text-align:right; font-variant-numeric:tabular-nums; }}
-  .pie-wrap {{ display:flex; gap:20px; align-items:center; padding:8px 0; }}
-  .pie {{ width:140px; height:140px; border-radius:50%; background:conic-gradient({pie_css}); flex-shrink:0; }}
-  .legend {{ font-size:13px; color:var(--muted); margin:6px 0; }}
-  .dot {{ display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; }}
-  .f-魏 {{ background:#4a7fd4; }} .f-蜀 {{ background:#3d9a6a; }} .f-吴 {{ background:#c47a2c; }} .f-群 {{ background:#8b6bc7; }}
   .tools {{ display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 12px; align-items:center; }}
   .tools label {{ font-size:12px; color:var(--muted); }}
   select, input[type="search"] {{ background:#1c2028; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-size:13px; }}
@@ -274,38 +269,37 @@ def render_html(complete, blank, partial, meta, members):
   th, td {{ padding:8px 10px; border-bottom:1px solid var(--border); text-align:left; }}
   th {{ background:#1a1e27; color:var(--muted); font-weight:600; font-size:12px; position:sticky; top:0; z-index:1; }}
   tr:nth-child(even) td {{ background:var(--row2); }}
-  tr.top td {{ color:#d8e6ff; }} tr.warn td {{ color:#e6d28a; }}
+  tr.top td {{ color:#d8e6ff; }}
   td.num, th.num {{ text-align:right; font-variant-numeric:tabular-nums; }}
   td.score {{ font-weight:650; color:var(--accent); }}
-  .tag {{ display:inline-block; font-size:10px; color:var(--warn); border:1px solid #5a4a1a; border-radius:4px; padding:0 4px; margin-left:4px; }}
-  .split {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+  .split3 {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }}
   .table-scroll {{ max-height:560px; overflow:auto; border-radius:8px; }}
   .muted {{ color:var(--muted); font-size:13px; }}
   .dim {{ color:var(--dim); font-size:12px; margin-top:8px; }}
-  @media (max-width:800px) {{ .stats,.grid2,.split {{ grid-template-columns:1fr; }} .bar-row {{ grid-template-columns:90px 1fr 40px; }} }}
+  @media (max-width:900px) {{ .stats,.grid2,.split3 {{ grid-template-columns:1fr; }} }}
   @media print {{
     body {{ background:#fff; color:#111; }}
     .panel,.stat,.callout,table {{ background:#fff!important; border-color:#ccc!important; color:#111!important; }}
-    th {{ background:#eee!important; color:#333!important; }}
     .table-scroll {{ max-height:none; overflow:visible; }}
   }}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>凌霄 S13 属性排名</h1>
-  <div class="sub">数据源：{esc(meta["source"])} · 四项齐全 {meta["complete"]} 人 / 全表 {meta["total"]} 人 · 评分不含爵位、阵容、集结 · 替换 data.xlsx 后重新构建即可更新</div>
+  <h1>{esc(meta["title"])}</h1>
+  <div class="sub">数据源：{esc(meta["source"])} · 六维齐全 {meta["complete"]} 人 / 全表 {meta["total"]} 人 · 评分不含实力与集结加成</div>
 
   <div class="stats">
-    <div class="stat"><div class="v">{meta["complete"]}</div><div class="l">四项齐全可排名</div></div>
+    <div class="stat"><div class="v">{meta["complete"]}</div><div class="l">六维齐全可排名</div></div>
     <div class="stat"><div class="v">{meta["incomplete"]}</div><div class="l">属性缺失未入榜</div></div>
     <div class="stat"><div class="v">{fmt(meta["avgScore"])}</div><div class="l">完整组平均属性分</div></div>
-    <div class="stat"><div class="v">{fmt(meta["avgInf"],0)} / {fmt(meta["avgArc"],0)}</div><div class="l">平均步兵 / 弓兵合计</div></div>
+    <div class="stat"><div class="v">{fmt(meta["avgSix"],0)}</div><div class="l">完整组平均六维</div></div>
   </div>
 
   <div class="callout">
-    <strong>综合属性分公式</strong><br/>
-    {esc(meta["formula"])}。{esc(meta["inf_rule"])}；{esc(meta["arc_rule"])}。
+    <strong>评分公式</strong><br/>
+    {esc(meta["formula"])}<br/>
+    {esc(meta["six_def"])}
   </div>
 
   <div class="grid2">
@@ -314,107 +308,97 @@ def render_html(complete, blank, partial, meta, members):
       {"".join(bars)}
     </div>
     <div class="panel">
-      <h2 style="margin-top:0">阵营分布（仅参考）</h2>
-      <div class="pie-wrap">
-        <div class="pie"></div>
-        <div>{pie_legend}
-          <div class="dim">宫四兵：是 {meta["gong"]["yes"]} / 否 {meta["gong"]["no"]} / 未填 {meta["gong"]["unk"]}</div>
-        </div>
-      </div>
+      <h2 style="margin-top:0">实力参考 Top10（不进分）</h2>
+      <table>
+        <thead><tr><th>#</th><th>成员</th><th class="num">实力</th><th class="num">六维</th></tr></thead>
+        <tbody>
+          {"".join(f"<tr><td>{i}</td><td>{esc(m['name'])}</td><td class=num>{fmt_power(m['power'])}</td><td class=num>{fmt(m['six'],0)}</td></tr>" for i,m in enumerate(top_power,1))}
+        </tbody>
+      </table>
     </div>
   </div>
 
-  <h2>完整属性排名</h2>
+  <h2>完整六维排名</h2>
   <div class="tools">
-    <label>阵营 <select id="faction"><option value="全部">全部</option>{faction_opts}</select></label>
-    <label>排序 <select id="sort">
-      <option value="score">属性分</option>
-      <option value="inf">步兵合计</option>
-      <option value="arc">弓兵合计</option>
-      <option value="rally">集结参考</option>
-      <option value="title">爵位参考</option>
-    </select></label>
-    <input type="search" id="q" placeholder="搜索成员名…" style="min-width:180px" />
+    <label>排序
+      <select id="sort">
+        <option value="score">属性分</option>
+        <option value="six">六维综合</option>
+        <option value="inf">步兵合计</option>
+        <option value="arc">弓兵合计</option>
+        <option value="cav">骑兵合计</option>
+        <option value="power">实力(参考)</option>
+        <option value="rally">集结(参考)</option>
+      </select>
+    </label>
+    <input type="search" id="q" placeholder="搜索游戏名…" style="min-width:180px" />
   </div>
   <div class="table-scroll">
     <table id="rankTable">
-      <thead><tr>
-        <th class="num">#</th><th>成员</th><th>阵容</th><th class="num">爵位</th>
-        <th class="num">集结</th><th class="num">步兵合计</th><th class="num">弓兵合计</th>
-        <th class="num">属性分</th><th>宫四</th>
-      </tr></thead>
+      <thead>
+        <tr>
+          <th class="num">#</th><th>游戏名</th><th class="num">实力</th><th class="num">集结%</th>
+          <th class="num">步兵</th><th class="num">弓兵</th><th class="num">骑兵</th>
+          <th class="num">六维</th><th class="num">属性分</th>
+        </tr>
+      </thead>
       <tbody>{"".join(rank_rows)}</tbody>
     </table>
   </div>
 
-  <div class="split" style="margin-top:24px">
+  <div class="split3" style="margin-top:24px">
     <div>
-      <h2>步兵榜 Top10</h2>
-      <table><thead><tr><th>#</th><th>成员</th><th>阵营</th><th class="num">合计</th><th class="num">生命</th><th class="num">防御</th></tr></thead>
+      <h2>步兵 Top10</h2>
+      <table><thead><tr><th>#</th><th>成员</th><th class="num">合计</th><th class="num">步生</th><th class="num">步防</th></tr></thead>
       <tbody>{inf_rows}</tbody></table>
     </div>
     <div>
-      <h2>弓兵榜 Top10</h2>
-      <table><thead><tr><th>#</th><th>成员</th><th>阵营</th><th class="num">合计</th><th class="num">攻击</th><th class="num">破坏</th></tr></thead>
+      <h2>弓兵 Top10</h2>
+      <table><thead><tr><th>#</th><th>成员</th><th class="num">合计</th><th class="num">弓攻</th><th class="num">弓破</th></tr></thead>
       <tbody>{arc_rows}</tbody></table>
+    </div>
+    <div>
+      <h2>骑兵 Top10</h2>
+      <table><thead><tr><th>#</th><th>成员</th><th class="num">合计</th><th class="num">骑攻</th><th class="num">骑破</th></tr></thead>
+      <tbody>{cav_rows}</tbody></table>
     </div>
   </div>
 
-  <h2>数据问题与未入榜</h2>
-  <div class="callout" style="border-color:#5a4a1a;background:#2a2414;color:#e6d28a">
-    <strong>宫四兵=否</strong><br/>{gong_no_text}
-  </div>
-  <h3>四项兵种缺项</h3>
+  <h2>未入榜</h2>
+  <h3>六维缺项（{len(partial)}）</h3>
   <table>
-    <thead><tr><th class="num">序号</th><th>成员</th><th>问题</th><th class="num">步兵生命</th>
-    <th class="num">步兵防御</th><th class="num">弓攻</th><th class="num">弓破</th><th>宫四</th></tr></thead>
-    <tbody>{partial_rows}</tbody>
+    <thead><tr><th class="num">序号</th><th>游戏名</th><th class="num">实力</th><th>问题</th></tr></thead>
+    <tbody>{partial_rows if partial_rows else "<tr><td colspan=4>无</td></tr>"}</tbody>
   </table>
-  <h3>几乎空白</h3>
-  <p class="muted">{"、".join(esc(m["name"]) for m in blank) or "-"}</p>
-  <p class="dim">微信打开：本页链接 · 更新方式：替换仓库中的 data.xlsx 后自动重建</p>
+  <h3>几乎无属性（{len(blank)}）</h3>
+  <p class="muted">{blank_names}</p>
+  <p class="dim">微信打开本页即可筛选排序。更新：替换 data.xlsx 后运行更新脚本或推送仓库。</p>
 </div>
 <script>
 (() => {{
-  const factionSel = document.getElementById("faction");
   const sortSel = document.getElementById("sort");
   const q = document.getElementById("q");
   const tbody = document.querySelector("#rankTable tbody");
-  const rows = Array.from(tbody.querySelectorAll("tr")).map((tr, i) => {{
-    const tds = tr.children;
-    return {{
-      el: tr,
-      name: tds[1].textContent,
-      faction: tds[2].textContent,
-      title: parseFloat(tds[3].textContent) || -1,
-      rally: parseFloat(tds[4].textContent) || -1,
-      inf: parseFloat(tds[5].textContent) || -1,
-      arc: parseFloat(tds[6].textContent) || -1,
-      score: parseFloat(tds[7].textContent) || -1,
-      orig: i,
-    }};
-  }});
+  const rows = Array.from(tbody.querySelectorAll("tr")).map((tr, i) => ({{
+    el: tr,
+    name: tr.children[1].textContent,
+    power: parseFloat(tr.dataset.power) || -1,
+    rally: parseFloat(tr.dataset.rally) || -1,
+    six: parseFloat(tr.dataset.six) || -1,
+    inf: parseFloat(tr.dataset.inf) || -1,
+    arc: parseFloat(tr.dataset.arc) || -1,
+    cav: parseFloat(tr.dataset.cav) || -1,
+    score: parseFloat(tr.dataset.score) || -1,
+    orig: i,
+  }}));
   function apply() {{
-    const f = factionSel.value;
     const key = sortSel.value;
     const term = q.value.trim().toLowerCase();
-    let list = rows.filter(r => {{
-      if (f !== "全部" && r.faction !== f) return false;
-      if (term && !r.name.toLowerCase().includes(term)) return false;
-      return true;
-    }});
-    list.sort((a, b) => {{
-      const av = a[key], bv = b[key];
-      if (bv !== av) return bv - av;
-      return a.orig - b.orig;
-    }});
+    let list = rows.filter(r => !term || r.name.toLowerCase().includes(term));
+    list.sort((a,b) => (b[key] !== a[key] ? b[key]-a[key] : a.orig-b.orig));
     tbody.innerHTML = "";
-    list.forEach((r, i) => {{
-      r.el.children[0].textContent = String(i + 1);
-      tbody.appendChild(r.el);
-    }});
+    list.forEach((r,i) => {{ r.el.children[0].textContent = String(i+1); tbody.appendChild(r.el); }});
   }}
-  factionSel.addEventListener("change", apply);
   sortSel.addEventListener("change", apply);
   q.addEventListener("input", apply);
 }})();
@@ -426,13 +410,14 @@ def render_html(complete, blank, partial, meta, members):
 
 def main():
     if not DATA_XLSX.exists():
-        raise SystemExit(f"找不到 {DATA_XLSX}，请把表格命名为 data.xlsx 放在本目录")
-    members, _sheet = load_members(DATA_XLSX)
+        raise SystemExit(f"找不到 {DATA_XLSX}")
+    members, _ = load_members(DATA_XLSX)
     complete, blank, partial, meta = score_members(members)
-    html = render_html(complete, blank, partial, meta, members)
-    OUT_HTML.write_text(html, encoding="utf-8")
-    print(f"OK -> {OUT_HTML}")
-    print(f"ranked={meta['complete']} incomplete={meta['incomplete']} top={complete[0]['name']} {complete[0]['score']}")
+    OUT_HTML.write_text(render_html(complete, blank, partial, meta), encoding="utf-8")
+    print(f"OK ranked={len(complete)} blankish={len(blank)} partial={len(partial)}")
+    print("TOP10:")
+    for m in complete[:10]:
+        print(m["rank"], m["name"], m["score"], "six", m["six"])
 
 
 if __name__ == "__main__":
