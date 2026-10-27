@@ -1,6 +1,6 @@
 # 醉梦成员属性排名
 
-微信可打开：https://quancn.github.io/lingxiao-s13-rank/
+微信可打开：https://quancn.github.io/zuimeng-rank/
 
 ## 更新方式
 

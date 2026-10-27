@@ -22,5 +22,5 @@ if errorlevel 1 (
   )
 )
 echo [3/3] 完成。约1分钟后刷新：
-echo https://quancn.github.io/lingxiao-s13-rank/
+echo https://quancn.github.io/zuimeng-rank/
 pause
